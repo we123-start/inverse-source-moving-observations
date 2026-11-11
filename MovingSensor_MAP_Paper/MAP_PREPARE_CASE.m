@@ -1,0 +1,76 @@
+function S = MAP_PREPARE_CASE(kind, noiseCase, rep)
+%MAP_PREPARE_CASE Independently regenerate all measurements from Q2/BE.
+% No cached inverse results, no MAT output files and no graphics exports.
+% All 12 entry points call this function; all use exactly the original
+% truth/inverse mesh, paired noise draws and recursive movement algorithm.
+if nargin < 2 || isempty(noiseCase), noiseCase = 'noisy'; end
+if nargin < 3 || isempty(rep), rep = 1; end
+kind = lower(char(kind)); noiseCase = lower(char(noiseCase));
+assert(any(strcmp(kind,{'circle','kite','fourleaf','peanut'})), ...
+    'Unknown shape: %s',kind);
+assert(any(strcmp(noiseCase,{'noisy','zero'})), ...
+    'Noise case must be noisy or zero');
+assert(isscalar(rep) && rep >= 1 && rep == floor(rep), ...
+    'rep must be a positive integer');
+
+root = fileparts(mfilename('fullpath'));
+addpath(root,'-begin');
+addpath(fullfile(root,'matlab'),'-begin');
+addpath(fullfile(root,'matlab','original_fem'),'-begin');
+assert(exist('fmincon','file') == 2, ...
+    'Optimization Toolbox (fmincon) is required.');
+% Avoid silently executing numerical helpers from an old project on path.
+assert(strcmpi(which('V16_CONFIG'),fullfile(root,'matlab','V16_CONFIG.m')), ...
+    'MATLAB is using V16_CONFIG.m from a different folder.');
+cfg = V16_CONFIG();
+w0 = cfg.mapInitial.(kind);
+[c0,ceq0] = map_constraints(w0,kind);
+assert(isempty(ceq0) && all(isfinite(c0)) && all(c0 < -1e-8), ...
+    'The preselected MAP initial point is inadmissible');
+fprintf('\n===== %s | %s | replicate %d =====\n',kind,noiseCase,rep);
+fprintf('Building truth Q2/Backward-Euler model...\n');
+truthModel = reviewer2_model('setup',cfg.truthMesh,cfg.truthMesh, ...
+    cfg.dt,cfg.steps,false,'BE',6);
+truthModel = reviewer2_model('truth',truthModel,kind, ...
+    reviewer2_shapes('truth',kind),reviewer2_shapes('amplitude',kind));
+noise = V16_GET_NOISE(root,kind,noiseCase,rep,cfg);
+route = V16_ROUTE(truthModel,kind,noiseCase,noise,cfg);
+% The manuscript's final controlled comparisons all have FOUR windows.
+% Never silently pad/truncate an early-stopped adaptive route to 320.
+if route.nCompletedWindows ~= cfg.maxWindows
+    error('MAP:PaperHorizonMismatch', [ ...
+        '%s %s replicate %d stops after %d windows (%s); ', ...
+        'cannot label it a four-window 320-observation paper experiment. ', ...
+        'Check the flux-based stopping decisions and the noise sample.'],kind,noiseCase,rep, ...
+        route.nCompletedWindows,route.stopReason);
+end
+if rep == 1 && strcmp(noiseCase,'noisy')
+    assert(route.matchesFigure, ...
+        'The fixed-noise route does not match the manuscript positions.');
+    assert(route.auxiliarySamples==6, ...
+        'The four-window paper case must use exactly six auxiliary readings.');
+    expectedGrid=[1 80;91 170;181 260;266 345];
+    if strcmp(kind,'peanut')
+        expectedGrid(4,:)=[265 344];
+    end
+    actualGrid=round(route.mainWindows/cfg.dt);
+    assert(isequal(actualGrid,expectedGrid), ...
+        'Recursive times do not match the four paper windows for %s.',kind);
+    fprintf('Paper windows (%s), grid indices: %s\n', ...
+        kind,mat2str(actualGrid));
+end
+[data, info] = V16_BUILD_DATA(truthModel,kind,route,noise,cfg);
+assert(numel(data.adaptive.observed) == 320 && ...
+       numel(data.fixed_initial.observed) == 320 && ...
+       numel(data.local_A.observed) == 320, ...
+       'Expected 320 main observations per complete policy');
+assert(info.selectionTruthInformed, ...
+       'Low-flux controls must be labeled truth-informed.');
+clear truthModel;
+fprintf('Building inverse Q2/Backward-Euler model...\n');
+invModel = reviewer2_model('setup',cfg.invMesh,cfg.invMesh, ...
+    cfg.dt,cfg.steps,true,'BE',6);
+S = struct('kind',kind,'noiseCase',noiseCase,'rep',rep, ...
+    'cfg',cfg,'w0',w0,'noise',noise,'route',route, ...
+    'data',data,'designInfo',info,'invModel',invModel);
+end

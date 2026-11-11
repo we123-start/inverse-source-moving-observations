@@ -1,0 +1,6 @@
+function MAP_PRINT_ERRORS(label,fit)
+% Standard quantitative reconstruction summary for every independent run.
+fprintf('  %-20s | main=%3d | rel.param=%.6g | support=%.6g | IoU=%.6f | MAP J=%.7g\n', ...
+    label,fit.nMainObservations,fit.relativeParameterError, ...
+    fit.relativeSymmetricDifference,fit.IoU,fit.objective);
+end
